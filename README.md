@@ -215,3 +215,8 @@ documentation of the behaviour.
   live APIs.
 - `Retry-After` on `503`, an OpenAPI description, and per-client rate limiting.
 - A layered Docker image and container-aware JVM settings.
+
+## Tooling
+
+I used Claude Code as a pair programmer for scaffolding and test boilerplate, as I do day to day;
+the design, the trade-offs above and the final review are mine.

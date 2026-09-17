@@ -10,9 +10,12 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Any runtime exception from a provider, not only {@link ProviderException}, counts as a failure:
  * a bug in one adapter must not take the whole endpoint down. Unexpected exceptions are logged with
- * their stack trace so they remain visible.
+ * their stack trace so they remain visible; providers skipped by an open circuit breaker are logged
+ * at debug level only, because that is the expected steady state during an outage.
  */
 public final class FailoverWeatherProvider implements WeatherProvider {
+
+    public static final String NAME = "failover";
 
     private static final Logger log = LoggerFactory.getLogger(FailoverWeatherProvider.class);
 
@@ -28,7 +31,7 @@ public final class FailoverWeatherProvider implements WeatherProvider {
 
     @Override
     public String name() {
-        return "failover";
+        return NAME;
     }
 
     @Override
@@ -37,6 +40,9 @@ public final class FailoverWeatherProvider implements WeatherProvider {
         for (WeatherProvider provider : providers) {
             try {
                 return provider.currentWeather(city);
+            } catch (ProviderSkippedException e) {
+                log.debug("Provider {} skipped for {}: {}", provider.name(), city, e.getMessage());
+                failures.add(e);
             } catch (ProviderException e) {
                 log.warn("Provider {} failed for {}: {}", provider.name(), city, e.getMessage());
                 failures.add(e);
@@ -45,6 +51,6 @@ public final class FailoverWeatherProvider implements WeatherProvider {
                 failures.add(new ProviderException(provider.name(), "unexpected " + e.getClass().getSimpleName(), e));
             }
         }
-        throw new AllProvidersFailedException(failures);
+        throw new AllProvidersFailedException(NAME, failures);
     }
 }

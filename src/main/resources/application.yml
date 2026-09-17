@@ -9,12 +9,15 @@ spring:
       enabled: true
 
 weather:
-  # How long a provider result is served from memory before it is refreshed.
+  # How long a provider result, or a failed refresh attempt, is served from memory before the
+  # providers are asked again.
   cache-ttl: 3s
   providers:
     # Failover order is fixed in WeatherConfiguration: weatherstack first, openweathermap second.
+    # The timeout applies separately to connecting and to reading, so one provider can cost up to
+    # twice this value before the next one is tried.
     weatherstack:
-      base-url: http://api.weatherstack.com
+      base-url: https://api.weatherstack.com
       api-key: ${WEATHERSTACK_ACCESS_KEY:}
       timeout: 2s
     openweathermap:
@@ -22,11 +25,13 @@ weather:
       api-key: ${OPENWEATHERMAP_API_KEY:}
       timeout: 2s
   circuit-breaker:
-    # A provider is skipped (circuit open) once half of its last 4 calls failed, and retried after 30s.
-    sliding-window-size: 4
-    minimum-number-of-calls: 2
+    # A provider is skipped (circuit open) once at least half of its last 6 calls failed, judged
+    # after no fewer than 3 calls, and retried with one trial call after 30s.
+    sliding-window-size: 6
+    minimum-number-of-calls: 3
     failure-rate-threshold: 50
     wait-duration-in-open-state: 30s
+    permitted-calls-in-half-open-state: 1
 
 management:
   endpoints:

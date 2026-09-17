@@ -34,6 +34,14 @@ class FailoverWeatherProviderTest {
     }
 
     @Test
+    void fallsBackToTheNextProviderWhenThePrimaryIsSkippedByItsCircuitBreaker() {
+        primary.willThrow(new ProviderSkippedException("primary", "circuit breaker is OPEN", null));
+        secondary.willReturn(SECONDARY_WEATHER);
+
+        assertThat(failover.currentWeather(City.SINGAPORE)).isEqualTo(SECONDARY_WEATHER);
+    }
+
+    @Test
     void treatsAnUnexpectedExceptionFromAProviderAsAFailure() {
         primary.willThrow(new NullPointerException("bug in the adapter"));
         secondary.willReturn(SECONDARY_WEATHER);
@@ -48,7 +56,7 @@ class FailoverWeatherProviderTest {
 
         assertThatThrownBy(() -> failover.currentWeather(City.SINGAPORE))
                 .isInstanceOf(AllProvidersFailedException.class)
-                .hasMessageContaining("all 2 providers failed")
+                .hasMessage("failover: all 2 providers failed")
                 .satisfies(e -> assertThat(e.getSuppressed())
                         .extracting(Throwable::getMessage)
                         .containsExactly("primary: HTTP 503", "secondary: I/O failure: ConnectException"));

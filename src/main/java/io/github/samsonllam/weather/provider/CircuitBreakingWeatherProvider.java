@@ -1,7 +1,11 @@
-package io.github.samsonllam.weather.domain;
+package io.github.samsonllam.weather.provider;
 
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.samsonllam.weather.domain.City;
+import io.github.samsonllam.weather.domain.ProviderSkippedException;
+import io.github.samsonllam.weather.domain.Weather;
+import io.github.samsonllam.weather.domain.WeatherProvider;
 
 /**
  * Wraps a provider in a circuit breaker so that a provider which keeps failing is skipped
@@ -27,7 +31,7 @@ public final class CircuitBreakingWeatherProvider implements WeatherProvider {
         try {
             return circuitBreaker.executeSupplier(() -> delegate.currentWeather(city));
         } catch (CallNotPermittedException e) {
-            throw new ProviderException(name(), "skipped, circuit breaker is " + circuitBreaker.getState(), e);
+            throw new ProviderSkippedException(name(), "circuit breaker is " + circuitBreaker.getState(), e);
         }
     }
 }

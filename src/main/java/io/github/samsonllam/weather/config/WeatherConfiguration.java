@@ -4,12 +4,12 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.samsonllam.weather.config.WeatherProperties.ProviderSettings;
 import io.github.samsonllam.weather.domain.CachingWeatherService;
-import io.github.samsonllam.weather.domain.CircuitBreakingWeatherProvider;
 import io.github.samsonllam.weather.domain.FailoverWeatherProvider;
 import io.github.samsonllam.weather.domain.InMemoryWeatherCache;
 import io.github.samsonllam.weather.domain.WeatherCache;
 import io.github.samsonllam.weather.domain.WeatherProvider;
 import io.github.samsonllam.weather.domain.WeatherService;
+import io.github.samsonllam.weather.provider.CircuitBreakingWeatherProvider;
 import io.github.samsonllam.weather.provider.openweathermap.OpenWeatherMapProvider;
 import io.github.samsonllam.weather.provider.weatherstack.WeatherstackProvider;
 import java.net.http.HttpClient;
@@ -35,8 +35,9 @@ class WeatherConfiguration {
         return Clock.systemUTC();
     }
 
+    /** Breakers read time through the application clock, so their recovery can be tested without waiting. */
     @Bean
-    CircuitBreakerRegistry circuitBreakerRegistry(WeatherProperties properties) {
+    CircuitBreakerRegistry circuitBreakerRegistry(WeatherProperties properties, Clock clock) {
         WeatherProperties.CircuitBreakerSettings settings = properties.circuitBreaker();
         CircuitBreakerConfig config = CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
@@ -44,7 +45,8 @@ class WeatherConfiguration {
                 .minimumNumberOfCalls(settings.minimumNumberOfCalls())
                 .failureRateThreshold(settings.failureRateThreshold())
                 .waitDurationInOpenState(settings.waitDurationInOpenState())
-                .permittedNumberOfCallsInHalfOpenState(1)
+                .permittedNumberOfCallsInHalfOpenState(settings.permittedCallsInHalfOpenState())
+                .clock(clock)
                 .build();
         return CircuitBreakerRegistry.of(config);
     }
@@ -94,9 +96,16 @@ class WeatherConfiguration {
         return settings;
     }
 
-    /** One client per provider so that each gets its own base URL and timeouts. */
+    /**
+     * One client per provider so that each gets its own base URL and timeouts. HTTP/1.1 is pinned
+     * because neither provider benefits from HTTP/2 and the JDK client would otherwise attempt an
+     * h2c upgrade on every plain-HTTP request.
+     */
     private static RestClient restClient(RestClient.Builder builder, ProviderSettings settings) {
-        HttpClient httpClient = HttpClient.newBuilder().connectTimeout(settings.timeout()).build();
+        HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(settings.timeout())
+                .build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(settings.timeout());
         return builder.baseUrl(settings.baseUrl()).requestFactory(requestFactory).build();

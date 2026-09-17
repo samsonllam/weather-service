@@ -1,4 +1,4 @@
-package io.github.samsonllam.weather.config;
+package io.github.samsonllam.weather.provider;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;

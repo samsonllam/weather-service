@@ -4,7 +4,7 @@ import io.github.samsonllam.weather.domain.City;
 import io.github.samsonllam.weather.domain.ProviderException;
 import io.github.samsonllam.weather.domain.Weather;
 import io.github.samsonllam.weather.domain.WeatherProvider;
-import io.github.samsonllam.weather.provider.ProviderHttp;
+import io.github.samsonllam.weather.provider.ProviderSupport;
 import org.springframework.web.client.RestClient;
 
 /**
@@ -36,7 +36,7 @@ public final class OpenWeatherMapProvider implements WeatherProvider {
     @Override
     public Weather currentWeather(City city) {
         String query = city.displayName() + "," + city.countryCode();
-        OpenWeatherMapResponse response = ProviderHttp.call(NAME, () -> restClient.get()
+        OpenWeatherMapResponse response = ProviderSupport.call(NAME, () -> restClient.get()
                 .uri("/data/2.5/weather?q={query}&appid={apiKey}&units=metric", query, apiKey)
                 .retrieve()
                 .body(OpenWeatherMapResponse.class));
@@ -44,6 +44,6 @@ public final class OpenWeatherMapProvider implements WeatherProvider {
                 || response.wind() == null || response.wind().speed() == null) {
             throw new ProviderException(NAME, "response is missing temperature or wind speed");
         }
-        return new Weather(response.main().temp(), response.wind().speed() * METRES_PER_SECOND_TO_KPH);
+        return ProviderSupport.weather(NAME, response.main().temp(), response.wind().speed() * METRES_PER_SECOND_TO_KPH);
     }
 }

@@ -9,15 +9,20 @@ import io.github.samsonllam.weather.domain.ProviderException;
 import io.github.samsonllam.weather.domain.Weather;
 import io.github.samsonllam.weather.support.FakeProviderServer;
 import io.github.samsonllam.weather.support.ProviderPayloads;
+import io.github.samsonllam.weather.support.StackTraces;
+import io.github.samsonllam.weather.support.TestRestClients;
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.client.RestClient;
 
 class OpenWeatherMapProviderTest {
 
+    private static final Duration TIMEOUT = Duration.ofMillis(500);
+    private static final String API_KEY = "secret-key";
+
     private final FakeProviderServer server = new FakeProviderServer();
     private final OpenWeatherMapProvider provider =
-            new OpenWeatherMapProvider(RestClient.builder().baseUrl(server.baseUrl()).build(), "secret-key");
+            new OpenWeatherMapProvider(TestRestClients.withTimeout(server.baseUrl(), TIMEOUT), API_KEY);
 
     @AfterEach
     void stopServer() {
@@ -37,13 +42,13 @@ class OpenWeatherMapProviderTest {
     }
 
     @Test
-    void treatsAnAuthenticationErrorAsAFailureWithoutLeakingTheUrl() {
+    void treatsAnAuthenticationErrorAsAFailureWithoutLeakingTheKeyAnywhereInTheStackTrace() {
         server.respond(401, ProviderPayloads.OPENWEATHERMAP_INVALID_KEY);
 
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)
                 .hasMessage("openweathermap: HTTP 401")
-                .satisfies(e -> assertThat(e.getMessage()).doesNotContain("secret-key"));
+                .satisfies(e -> assertThat(StackTraces.of(e)).doesNotContain(API_KEY));
     }
 
     @Test
@@ -53,5 +58,14 @@ class OpenWeatherMapProviderTest {
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)
                 .hasMessageContaining("missing temperature or wind speed");
+    }
+
+    @Test
+    void treatsAnImplausibleReadingAsAFailure() {
+        server.respond(200, ProviderPayloads.openWeatherMap(30.4, -1.0));
+
+        assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
+                .isInstanceOf(ProviderException.class)
+                .hasMessage("openweathermap: implausible wind speed: -3.6 km/h");
     }
 }

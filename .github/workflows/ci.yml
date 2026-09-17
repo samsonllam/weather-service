@@ -22,3 +22,24 @@ jobs:
           cache: maven
       - name: Build and test
         run: ./mvnw -B verify
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t weather-service:ci .
+      - name: Start with placeholder keys and wait for health
+        run: |
+          docker run -d --name weather-service -p 8080:8080 \
+            -e WEATHERSTACK_ACCESS_KEY=placeholder -e OPENWEATHERMAP_API_KEY=placeholder weather-service:ci
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/actuator/health && exit 0
+            sleep 1
+          done
+          docker logs weather-service
+          exit 1
+      - name: Stop container
+        if: always()
+        run: docker rm -f weather-service || true

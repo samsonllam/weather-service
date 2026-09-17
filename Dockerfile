@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build stage: compile and package on JDK 25 with Maven.
 # Tests are not run here; run ./mvnw verify (or CI) before building an image.
-FROM maven:3.9.16-eclipse-temurin-25 AS build
+FROM maven:3.9.15-eclipse-temurin-25 AS build
 WORKDIR /workspace
 COPY pom.xml .
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline

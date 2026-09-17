@@ -97,9 +97,11 @@ class WeatherConfiguration {
     }
 
     /**
-     * One client per provider so that each gets its own base URL and timeouts. HTTP/1.1 is pinned
-     * because neither provider benefits from HTTP/2 and the JDK client would otherwise attempt an
-     * h2c upgrade on every plain-HTTP request.
+     * One client per provider so that each gets its own base URL and timeouts. The read timeout is
+     * applied by Spring as the JDK request timeout, which bounds connecting and receiving the
+     * headers together, and again to reading the body. HTTP/1.1 is pinned so that behaviour is the
+     * same whether a base URL is http or https (the JDK client would otherwise try an h2c upgrade
+     * on plain http); two small requests every few seconds gain nothing from HTTP/2.
      */
     private static RestClient restClient(RestClient.Builder builder, ProviderSettings settings) {
         HttpClient httpClient = HttpClient.newBuilder()

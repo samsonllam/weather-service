@@ -14,22 +14,25 @@ public final class ProviderSupport {
     }
 
     /**
-     * Runs an HTTP call and maps every {@link RestClientException} to a {@link ProviderException}.
+     * Runs an HTTP call and maps every {@link RestClientException} to a {@link ProviderException}
+     * whose message is built here from a status code or an exception class name, never from
+     * upstream text.
      *
-     * <p>Messages are rebuilt rather than copied from the HTTP client, so that log lines stay short,
-     * provider-specific and independent of framework behaviour. Spring itself already strips the
-     * query string, and with it the API key, from its own exception messages; this is defence in depth.
+     * <p>Exceptions carrying response content (HTTP error statuses, decoding failures) are not kept
+     * as the cause: Spring quotes the response body in their messages, and a provider that echoes
+     * the request could put the API key into a stack trace. Transport failures carry no body and
+     * are kept, because their root cause is the useful diagnostic.
      */
     public static <T> T call(String providerName, Supplier<T> request) {
         T body;
         try {
             body = request.get();
         } catch (RestClientResponseException e) {
-            throw new ProviderException(providerName, "HTTP " + e.getStatusCode().value(), e);
+            throw new ProviderException(providerName, "HTTP " + e.getStatusCode().value());
         } catch (ResourceAccessException e) {
             throw new ProviderException(providerName, "I/O failure: " + rootCause(e).getClass().getSimpleName(), e);
         } catch (RestClientException e) {
-            throw new ProviderException(providerName, "unreadable response: " + rootCause(e).getClass().getSimpleName(), e);
+            throw new ProviderException(providerName, "unreadable response: " + rootCause(e).getClass().getSimpleName());
         }
         if (body == null) {
             throw new ProviderException(providerName, "empty response body");

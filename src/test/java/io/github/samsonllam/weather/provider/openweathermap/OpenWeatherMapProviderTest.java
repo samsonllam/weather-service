@@ -42,8 +42,8 @@ class OpenWeatherMapProviderTest {
     }
 
     @Test
-    void treatsAnAuthenticationErrorAsAFailureWithoutLeakingTheKeyAnywhereInTheStackTrace() {
-        server.respond(401, ProviderPayloads.OPENWEATHERMAP_INVALID_KEY);
+    void treatsAnAuthenticationErrorAsAFailureWithoutQuotingABodyThatEchoesTheKey() {
+        server.respond(401, "{\"cod\": 401, \"message\": \"Invalid API key secret-key\"}");
 
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)

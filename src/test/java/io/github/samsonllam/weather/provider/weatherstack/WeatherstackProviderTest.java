@@ -40,12 +40,25 @@ class WeatherstackProviderTest {
     }
 
     @Test
-    void treatsAnErrorPayloadWithHttp200AsAFailure() {
+    void treatsAnErrorPayloadWithHttp200AsAFailureDescribedInItsOwnWords() {
         server.respond(200, ProviderPayloads.WEATHERSTACK_INVALID_KEY);
 
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)
-                .hasMessage("weatherstack: API error 101 (invalid_access_key): You have not supplied a valid API Access Key.");
+                .hasMessage("weatherstack: API error 101 (invalid access key)");
+    }
+
+    @Test
+    void neverRepeatsUpstreamErrorTextWhichCouldEchoTheKey() {
+        server.respond(200, """
+                {"success": false, "error": {"code": 104, "type": "usage_limit\\nkey=secret-key",
+                 "info": "Your key secret-key has reached its limit"}}
+                """);
+
+        assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
+                .isInstanceOf(ProviderException.class)
+                .hasMessage("weatherstack: API error 104 (monthly usage limit reached)")
+                .satisfies(e -> assertThat(StackTraces.of(e)).doesNotContain(ACCESS_KEY));
     }
 
     @Test
@@ -58,6 +71,15 @@ class WeatherstackProviderTest {
     }
 
     @Test
+    void treatsAnEmptyBodyAsAFailure() {
+        server.respond(200, "");
+
+        assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
+                .isInstanceOf(ProviderException.class)
+                .hasMessage("weatherstack: empty response body");
+    }
+
+    @Test
     void treatsAnImplausibleReadingAsAFailure() {
         server.respond(200, ProviderPayloads.weatherstack(999, 20));
 
@@ -67,17 +89,18 @@ class WeatherstackProviderTest {
     }
 
     @Test
-    void treatsABodyThatIsNotJsonAsAFailure() {
-        server.respond(200, "<html><body>Service temporarily unavailable</body></html>");
+    void treatsABodyThatIsNotJsonAsAFailureWithoutQuotingIt() {
+        server.respond(200, "<html><body>Bad key secret-key</body></html>");
 
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)
-                .hasMessageStartingWith("weatherstack: unreadable response: ");
+                .hasMessageStartingWith("weatherstack: unreadable response: ")
+                .satisfies(e -> assertThat(StackTraces.of(e)).doesNotContain(ACCESS_KEY));
     }
 
     @Test
-    void treatsAServerErrorAsAFailureWithoutLeakingTheKeyAnywhereInTheStackTrace() {
-        server.respond(503, "{}");
+    void treatsAServerErrorAsAFailureWithoutQuotingABodyThatEchoesTheKey() {
+        server.respond(503, "{\"echo\": \"access_key=secret-key\"}");
 
         assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
                 .isInstanceOf(ProviderException.class)

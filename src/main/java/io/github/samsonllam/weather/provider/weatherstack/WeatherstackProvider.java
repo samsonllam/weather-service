@@ -38,13 +38,30 @@ public final class WeatherstackProvider implements WeatherProvider {
                 .retrieve()
                 .body(WeatherstackResponse.class));
         if (response.error() != null) {
-            throw new ProviderException(NAME, "API error " + response.error().code()
-                    + " (" + response.error().type() + "): " + response.error().info());
+            Integer code = response.error().code();
+            throw new ProviderException(NAME, "API error " + code + " (" + describe(code) + ")");
         }
         WeatherstackResponse.Current current = response.current();
         if (current == null || current.temperature() == null || current.windSpeed() == null) {
             throw new ProviderException(NAME, "response is missing current temperature or wind speed");
         }
         return ProviderSupport.weather(NAME, current.temperature(), current.windSpeed());
+    }
+
+    /** Local descriptions of the documented error codes, so that no upstream text is ever logged. */
+    private static String describe(Integer code) {
+        if (code == null) {
+            return "no error code";
+        }
+        return switch (code) {
+            case 101 -> "invalid access key";
+            case 102 -> "account inactive";
+            case 103 -> "endpoint not available";
+            case 104 -> "monthly usage limit reached";
+            case 105 -> "HTTPS not available on this plan";
+            case 601 -> "missing query";
+            case 615 -> "request failed";
+            default -> "see the Weatherstack error code list";
+        };
     }
 }

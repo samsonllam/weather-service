@@ -42,7 +42,10 @@ public final class StubWeatherProvider implements WeatherProvider {
     }
 
     public void releaseCalls() {
-        gate.countDown();
+        CountDownLatch currentGate = gate;
+        if (currentGate != null) {
+            currentGate.countDown();
+        }
     }
 
     public int callCount() {

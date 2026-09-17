@@ -13,6 +13,6 @@ public interface WeatherCache {
 
     void put(City city, CachedWeather entry);
 
-    /** Drops every entry: an operational flush, also used to isolate test scenarios. */
+    /** Drops every entry; used to isolate test scenarios. */
     void clear();
 }

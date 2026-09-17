@@ -10,17 +10,21 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Boots the whole application on a random port, with both providers pointed at local fake servers
- * and the clock under test control. One context is shared by every scenario.
+ * and the clock under test control. One context is shared by every scenario; the scenarios run
+ * sequentially and reset the shared state in a {@code @Before} hook.
  */
 @CucumberContextConfiguration
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-        "weather.providers.weatherstack.api-key=test-weatherstack-key",
-        "weather.providers.openweathermap.api-key=test-openweathermap-key",
+        "weather.providers.weatherstack.api-key=" + CucumberSpringConfiguration.WEATHERSTACK_KEY,
+        "weather.providers.openweathermap.api-key=" + CucumberSpringConfiguration.OPENWEATHERMAP_KEY,
         "weather.providers.weatherstack.timeout=1s",
         "weather.providers.openweathermap.timeout=1s"
 })
 @Import(TestClockConfiguration.class)
 public class CucumberSpringConfiguration {
+
+    static final String WEATHERSTACK_KEY = "test-weatherstack-key";
+    static final String OPENWEATHERMAP_KEY = "test-openweathermap-key";
 
     static final FakeProviderServer WEATHERSTACK = new FakeProviderServer();
     static final FakeProviderServer OPENWEATHERMAP = new FakeProviderServer();

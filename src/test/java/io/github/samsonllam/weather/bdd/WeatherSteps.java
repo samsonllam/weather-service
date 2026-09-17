@@ -3,6 +3,7 @@ package io.github.samsonllam.weather.bdd;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.jayway.jsonpath.JsonPath;
+import io.cucumber.java.AfterAll;
 import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
@@ -14,6 +15,7 @@ import io.github.samsonllam.weather.domain.WeatherCache;
 import io.github.samsonllam.weather.support.FakeProviderServer;
 import io.github.samsonllam.weather.support.MutableClock;
 import io.github.samsonllam.weather.support.ProviderPayloads;
+import io.github.samsonllam.weather.support.TestRestClients;
 import java.time.Duration;
 import org.json.JSONException;
 import org.skyscreamer.jsonassert.JSONAssert;
@@ -25,6 +27,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
 public class WeatherSteps {
+
+    /** Longer than any provider timeout in the test configuration, so a hung provider never hangs a step. */
+    private static final Duration PROVIDER_HANG = Duration.ofSeconds(3);
+    private static final Duration CLIENT_TIMEOUT = Duration.ofSeconds(15);
 
     private final FakeProviderServer weatherstack = CucumberSpringConfiguration.WEATHERSTACK;
     private final FakeProviderServer openWeatherMap = CucumberSpringConfiguration.OPENWEATHERMAP;
@@ -41,15 +47,26 @@ public class WeatherSteps {
     @Autowired
     private CircuitBreakerRegistry circuitBreakers;
 
+    private RestClient client;
     private ResponseEntity<String> lastResponse;
+    private Duration lastElapsed;
 
     @Before
     public void startFromAKnownState() {
+        client = TestRestClients.withTimeout("http://localhost:" + port, CLIENT_TIMEOUT);
         cache.clear();
         circuitBreakers.getAllCircuitBreakers().forEach(CircuitBreaker::reset);
+        // Move past any attempt the previous scenario recorded, so each scenario starts with a quiet cache.
+        clock.advance(Duration.ofMinutes(1));
         weatherstack.reset();
         openWeatherMap.reset();
         lastResponse = null;
+    }
+
+    @AfterAll
+    public static void stopFakeProviders() {
+        CucumberSpringConfiguration.WEATHERSTACK.close();
+        CucumberSpringConfiguration.OPENWEATHERMAP.close();
     }
 
     @Given("Weatherstack reports {int} degrees and wind {int} km\\/h")
@@ -67,6 +84,11 @@ public class WeatherSteps {
         weatherstack.respond(503, "{}");
     }
 
+    @Given("Weatherstack hangs")
+    public void weatherstackHangs() {
+        weatherstack.respond(200, ProviderPayloads.weatherstack(29, 20)).respondAfter(PROVIDER_HANG);
+    }
+
     @Given("Weatherstack rejects the access key")
     public void weatherstackRejectsTheAccessKey() {
         weatherstack.respond(200, ProviderPayloads.WEATHERSTACK_INVALID_KEY);
@@ -75,6 +97,11 @@ public class WeatherSteps {
     @Given("OpenWeatherMap is down")
     public void openWeatherMapIsDown() {
         openWeatherMap.respond(503, "{}");
+    }
+
+    @Given("OpenWeatherMap hangs")
+    public void openWeatherMapHangs() {
+        openWeatherMap.respond(200, ProviderPayloads.openWeatherMap(30.4, 5.0)).respondAfter(PROVIDER_HANG);
     }
 
     @Given("a client fetched the weather in {word} {int} seconds ago")
@@ -117,6 +144,11 @@ public class WeatherSteps {
         assertThat(lastResponse.getStatusCode().value()).isEqualTo(status);
     }
 
+    @Then("the client got an answer within {int} seconds")
+    public void theClientGotAnAnswerWithinSeconds(int seconds) {
+        assertThat(lastElapsed).isLessThan(Duration.ofSeconds(seconds));
+    }
+
     @Then("the response is marked stale")
     public void theResponseIsMarkedStale() {
         assertThat(lastResponse.getHeaders().getFirst(WeatherController.STALE_HEADER)).isEqualTo("true");
@@ -129,7 +161,7 @@ public class WeatherSteps {
 
     @Then("the response is {int} seconds old")
     public void theResponseIsSecondsOld(int seconds) {
-        assertThat(lastResponse.getHeaders().getFirst("Age")).isEqualTo(Integer.toString(seconds));
+        assertThat(lastResponse.getHeaders().getFirst(WeatherController.AGE_HEADER)).isEqualTo(Integer.toString(seconds));
     }
 
     @Then("Weatherstack was called {int} time(s)")
@@ -144,21 +176,32 @@ public class WeatherSteps {
 
     @Then("the health endpoint reports {word} as {word}")
     public void theHealthEndpointReportsProviderAs(String provider, String state) {
-        String health = RestClient.create(baseUrl()).get().uri("/actuator/health").retrieve().body(String.class);
+        String health = client.get().uri("/actuator/health").retrieve().body(String.class);
         assertThat(JsonPath.<String>read(health, "$.status")).isEqualTo("UP");
         assertThat(JsonPath.<String>read(health, "$.components.weatherProviders.details." + provider)).isEqualTo(state);
     }
 
+    @Then("the health endpoint shows the cache for {word} as {word}")
+    public void theHealthEndpointShowsTheCacheFor(String city, String state) {
+        String health = client.get().uri("/actuator/health").retrieve().body(String.class);
+        assertThat(JsonPath.<String>read(health, "$.components.weatherProviders.details.cache." + city)).isEqualTo(state);
+    }
+
+    @Then("the metrics do not contain the provider keys")
+    public void theMetricsDoNotContainTheProviderKeys() {
+        String metrics = client.get().uri("/actuator/metrics/http.client.requests").retrieve().body(String.class);
+        assertThat(metrics)
+                .doesNotContain(CucumberSpringConfiguration.WEATHERSTACK_KEY)
+                .doesNotContain(CucumberSpringConfiguration.OPENWEATHERMAP_KEY);
+    }
+
     private void requestWeather(String city) {
-        lastResponse = RestClient.create(baseUrl())
-                .get()
+        long started = System.nanoTime();
+        lastResponse = client.get()
                 .uri("/v1/weather?city={city}", city)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, (request, response) -> { })
                 .toEntity(String.class);
-    }
-
-    private String baseUrl() {
-        return "http://localhost:" + port;
+        lastElapsed = Duration.ofNanos(System.nanoTime() - started);
     }
 }

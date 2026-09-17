@@ -46,7 +46,8 @@ class WeatherControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(content().json("{\"wind_speed\": 20, \"temperature_degrees\": 29}", JsonCompareMode.STRICT))
-                .andExpect(header().string(HttpHeaders.AGE, "0"))
+                .andExpect(header().string(WeatherController.AGE_HEADER, "0"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(header().doesNotExist(WeatherController.STALE_HEADER));
     }
 
@@ -60,13 +61,22 @@ class WeatherControllerTest {
     }
 
     @Test
+    void roundsHalvesUp() throws Exception {
+        weatherService.respondWith(new WeatherReport(new Weather(29.5, 20.5), NOW, false));
+
+        mockMvc.perform(get("/v1/weather").param("city", "singapore"))
+                .andExpect(status().isOk())
+                .andExpect(content().json("{\"wind_speed\": 21, \"temperature_degrees\": 30}", JsonCompareMode.STRICT));
+    }
+
+    @Test
     void flagsStaleResultsWithAHeaderAndTheirAgeAndKeepsThePayloadUnchanged() throws Exception {
         weatherService.respondWith(new WeatherReport(new Weather(29, 20), FOUR_SECONDS_AGO, true));
 
         mockMvc.perform(get("/v1/weather").param("city", "singapore"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(WeatherController.STALE_HEADER, "true"))
-                .andExpect(header().string(HttpHeaders.AGE, "4"))
+                .andExpect(header().string(WeatherController.AGE_HEADER, "4"))
                 .andExpect(content().json("{\"wind_speed\": 20, \"temperature_degrees\": 29}", JsonCompareMode.STRICT));
     }
 

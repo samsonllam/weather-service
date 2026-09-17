@@ -5,7 +5,7 @@ import io.github.samsonllam.weather.domain.WeatherReport;
 import io.github.samsonllam.weather.domain.WeatherService;
 import java.time.Clock;
 import java.time.Duration;
-import org.springframework.http.HttpHeaders;
+import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,6 +20,9 @@ public class WeatherController {
     /** Present (with value {@code true}) when the payload is older than the cache TTL because every provider was down. */
     public static final String STALE_HEADER = "X-Weather-Stale";
 
+    /** Whole seconds since the observation was received from a provider. */
+    public static final String AGE_HEADER = "X-Weather-Age";
+
     private final WeatherService weatherService;
     private final Clock clock;
 
@@ -33,7 +36,10 @@ public class WeatherController {
         City resolved = City.fromQuery(city).orElseThrow(() -> new UnsupportedCityException(city));
         WeatherReport report = weatherService.currentWeather(resolved);
         long ageSeconds = Math.max(0, Duration.between(report.fetchedAt(), clock.instant()).toSeconds());
-        ResponseEntity.BodyBuilder response = ResponseEntity.ok().header(HttpHeaders.AGE, Long.toString(ageSeconds));
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                // This service applies its own freshness rules; downstream HTTP caches must not add theirs.
+                .cacheControl(CacheControl.noStore())
+                .header(AGE_HEADER, Long.toString(ageSeconds));
         if (report.stale()) {
             response.header(STALE_HEADER, "true");
         }

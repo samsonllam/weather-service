@@ -1,4 +1,5 @@
-# Build stage: compile and package with the same Maven and JDK the project is developed on.
+# syntax=docker/dockerfile:1
+# Build stage: compile and package on JDK 25 with Maven.
 # Tests are not run here; run ./mvnw verify (or CI) before building an image.
 FROM maven:3.9.16-eclipse-temurin-25 AS build
 WORKDIR /workspace

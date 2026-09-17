@@ -7,12 +7,4 @@ import java.time.Instant;
  * older than the cache TTL because every provider was down when a refresh was due.
  */
 public record WeatherReport(Weather weather, Instant fetchedAt, boolean stale) {
-
-    static WeatherReport fresh(CachedWeather entry) {
-        return new WeatherReport(entry.weather(), entry.fetchedAt(), false);
-    }
-
-    static WeatherReport stale(CachedWeather entry) {
-        return new WeatherReport(entry.weather(), entry.fetchedAt(), true);
-    }
 }

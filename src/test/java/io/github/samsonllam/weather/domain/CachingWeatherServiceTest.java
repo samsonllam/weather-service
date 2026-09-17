@@ -48,6 +48,7 @@ class CachingWeatherServiceTest {
         WeatherReport report = service.currentWeather(City.SINGAPORE);
 
         assertThat(report.weather()).isEqualTo(FIRST);
+        assertThat(report.stale()).isFalse();
         assertThat(provider.callCount()).isEqualTo(1);
     }
 
@@ -62,6 +63,18 @@ class CachingWeatherServiceTest {
 
         assertThat(report.weather()).isEqualTo(SECOND);
         assertThat(report.stale()).isFalse();
+        assertThat(provider.callCount()).isEqualTo(2);
+    }
+
+    @Test
+    void withAZeroTtlEveryRequestAfterTheFirstInstantAsksTheProvider() {
+        CachingWeatherService uncached = new CachingWeatherService(provider, new InMemoryWeatherCache(), Duration.ZERO, clock);
+        provider.willReturn(FIRST);
+        uncached.currentWeather(City.SINGAPORE);
+        clock.advance(Duration.ofMillis(1));
+
+        uncached.currentWeather(City.SINGAPORE);
+
         assertThat(provider.callCount()).isEqualTo(2);
     }
 
@@ -81,6 +94,36 @@ class CachingWeatherServiceTest {
     }
 
     @Test
+    void servesStaleWhenTheProviderThrowsSomethingUnexpected() {
+        provider.willReturn(FIRST);
+        service.currentWeather(City.SINGAPORE);
+        clock.advance(Duration.ofMinutes(10));
+        provider.willThrow(new IllegalStateException("bug"));
+
+        WeatherReport report = service.currentWeather(City.SINGAPORE);
+
+        assertThat(report.weather()).isEqualTo(FIRST);
+        assertThat(report.stale()).isTrue();
+    }
+
+    @Test
+    void asksTheProviderAtMostOncePerTtlDuringAnOutage() {
+        provider.willReturn(FIRST);
+        service.currentWeather(City.SINGAPORE);
+        clock.advance(TTL.plusSeconds(1));
+        provider.willFail("all providers down");
+
+        assertThat(service.currentWeather(City.SINGAPORE).stale()).isTrue();
+        clock.advance(TTL);
+        assertThat(service.currentWeather(City.SINGAPORE).stale()).isTrue();
+        assertThat(provider.callCount()).as("second request within the TTL of the failed attempt").isEqualTo(2);
+
+        clock.advance(Duration.ofMillis(1));
+        assertThat(service.currentWeather(City.SINGAPORE).stale()).isTrue();
+        assertThat(provider.callCount()).as("the providers are probed again once the TTL has passed").isEqualTo(3);
+    }
+
+    @Test
     void recoversFromStaleAsSoonAsTheProviderIsBack() {
         provider.willReturn(FIRST);
         service.currentWeather(City.SINGAPORE);
@@ -88,6 +131,7 @@ class CachingWeatherServiceTest {
         provider.willFail("all providers down");
         service.currentWeather(City.SINGAPORE);
         provider.willReturn(SECOND);
+        clock.advance(TTL.plusMillis(1));
 
         WeatherReport report = service.currentWeather(City.SINGAPORE);
 
@@ -112,25 +156,51 @@ class CachingWeatherServiceTest {
         provider.willReturn(SECOND);
         provider.holdCalls();
 
-        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<WeatherReport>> requests = IntStream.range(0, 16)
-                    .mapToObj(i -> pool.submit(() -> service.currentWeather(City.SINGAPORE)))
-                    .toList();
-            await().atMost(5, TimeUnit.SECONDS).until(() -> provider.inFlight() == 1);
-            provider.releaseCalls();
+        List<WeatherReport> reports = requestConcurrently(16);
 
-            for (Future<WeatherReport> request : requests) {
-                WeatherReport report = request.get(5, TimeUnit.SECONDS);
-                assertThat(report.weather()).isEqualTo(SECOND);
-                assertThat(report.stale()).isFalse();
-            }
-        }
+        assertThat(reports).allSatisfy(report -> {
+            assertThat(report.weather()).isEqualTo(SECOND);
+            assertThat(report.stale()).isFalse();
+        });
         assertThat(provider.callCount()).as("one priming call plus one shared refresh").isEqualTo(2);
+    }
+
+    @Test
+    void concurrentRequestsDuringAnOutageShareASingleFailedAttempt() throws Exception {
+        provider.willReturn(FIRST);
+        service.currentWeather(City.SINGAPORE);
+        clock.advance(TTL.plusSeconds(1));
+        provider.willFail("all providers down");
+        provider.holdCalls();
+
+        List<WeatherReport> reports = requestConcurrently(16);
+
+        assertThat(reports).allSatisfy(report -> {
+            assertThat(report.weather()).isEqualTo(FIRST);
+            assertThat(report.stale()).isTrue();
+        });
+        assertThat(provider.callCount()).as("one priming call plus one shared failed attempt").isEqualTo(2);
     }
 
     @Test
     void rejectsANegativeTtl() {
         assertThatThrownBy(() -> new CachingWeatherService(provider, new InMemoryWeatherCache(), Duration.ofSeconds(-1), clock))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** Fires {@code count} requests at once, lets exactly one reach the held provider, then releases it. */
+    private List<WeatherReport> requestConcurrently(int count) throws Exception {
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<WeatherReport>> requests = IntStream.range(0, count)
+                    .mapToObj(i -> pool.submit(() -> service.currentWeather(City.SINGAPORE)))
+                    .toList();
+            await().atMost(5, TimeUnit.SECONDS).until(() -> provider.inFlight() == 1);
+            provider.releaseCalls();
+            List<WeatherReport> reports = new java.util.ArrayList<>();
+            for (Future<WeatherReport> request : requests) {
+                reports.add(request.get(5, TimeUnit.SECONDS));
+            }
+            return reports;
+        }
     }
 }

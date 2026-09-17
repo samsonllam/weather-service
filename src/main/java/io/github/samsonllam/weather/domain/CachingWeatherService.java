@@ -11,11 +11,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Serves observations from the cache while they are younger than the TTL, refreshes them from the
- * provider once they expire, and falls back to the expired entry when the provider fails.
+ * Serves observations from the cache and asks the providers at most once per TTL per city.
+ *
+ * <p>An entry younger than the TTL is served as is. Once it is older, the next request refreshes it
+ * from the provider; if the provider fails, the old observation is kept, marked as checked, and
+ * served as stale until the TTL has passed again. So during an outage the providers are probed once
+ * per TTL and every other request is answered from memory. With nothing cached at all there is
+ * nothing to serve, and the request fails.
  *
  * <p>Refreshes are single-flight per city: when an entry expires under load, one request performs
- * the provider call while the others wait for its result instead of each hitting the providers.
+ * the provider call while the others wait for its outcome, success or failure, instead of each
+ * hitting the providers.
  */
 public final class CachingWeatherService implements WeatherService {
 
@@ -29,7 +35,7 @@ public final class CachingWeatherService implements WeatherService {
 
     /**
      * @param provider the provider to refresh from, normally a {@link FailoverWeatherProvider}
-     * @param ttl      how long an observation is served without contacting the provider
+     * @param ttl      how long an observation, or a failed attempt, is served without contacting the provider
      */
     public CachingWeatherService(WeatherProvider provider, WeatherCache cache, Duration ttl, Clock clock) {
         if (ttl.isNegative()) {
@@ -43,40 +49,45 @@ public final class CachingWeatherService implements WeatherService {
 
     @Override
     public WeatherReport currentWeather(City city) {
-        Optional<CachedWeather> fresh = freshEntry(city);
-        if (fresh.isPresent()) {
-            return WeatherReport.fresh(fresh.get());
+        Optional<WeatherReport> cached = reportFromCache(city);
+        if (cached.isPresent()) {
+            return cached.get();
         }
         ReentrantLock lock = refreshLocks.computeIfAbsent(city, ignored -> new ReentrantLock());
         lock.lock();
         try {
-            // Another request may have refreshed the entry while this one waited for the lock.
-            return freshEntry(city)
-                    .map(WeatherReport::fresh)
-                    .orElseGet(() -> refresh(city));
+            // Another request may have refreshed, or failed to refresh, while this one waited for the lock.
+            return reportFromCache(city).orElseGet(() -> refresh(city));
         } finally {
             lock.unlock();
         }
     }
 
-    private Optional<CachedWeather> freshEntry(City city) {
+    /** The cached entry, if the providers were asked within the last TTL; empty when they must be asked now. */
+    private Optional<WeatherReport> reportFromCache(City city) {
         Instant now = clock.instant();
-        return cache.get(city).filter(entry -> entry.isFreshAt(now, ttl));
+        return cache.get(city)
+                .filter(entry -> entry.checkedWithin(ttl, now))
+                .map(entry -> new WeatherReport(entry.weather(), entry.fetchedAt(), entry.olderThan(ttl, now)));
     }
 
     private WeatherReport refresh(City city) {
+        // Stamped before the call: the observation is at least as old as the moment it was requested.
+        Instant attemptedAt = clock.instant();
         try {
             Weather weather = provider.currentWeather(city);
-            CachedWeather entry = new CachedWeather(weather, clock.instant());
-            cache.put(city, entry);
-            return WeatherReport.fresh(entry);
-        } catch (ProviderException e) {
-            Optional<CachedWeather> stale = cache.get(city);
-            if (stale.isPresent()) {
-                log.warn("Serving stale weather for {} fetched at {}: {}", city, stale.get().fetchedAt(), e.getMessage());
-                return WeatherReport.stale(stale.get());
+            cache.put(city, CachedWeather.fetched(weather, attemptedAt));
+            return new WeatherReport(weather, attemptedAt, false);
+        } catch (RuntimeException e) {
+            Optional<CachedWeather> previous = cache.get(city);
+            if (previous.isEmpty()) {
+                throw new WeatherUnavailableException(city, e);
             }
-            throw new WeatherUnavailableException(city, e);
+            CachedWeather stale = previous.get().withCheckedAt(attemptedAt);
+            cache.put(city, stale);
+            log.warn("Serving stale weather for {} fetched at {}, next provider attempt after {}: {}",
+                    city, stale.fetchedAt(), ttl, e.getMessage());
+            return new WeatherReport(stale.weather(), stale.fetchedAt(), true);
         }
     }
 }

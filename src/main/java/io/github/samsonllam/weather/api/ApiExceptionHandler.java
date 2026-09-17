@@ -23,7 +23,7 @@ class ApiExceptionHandler {
 
     @ExceptionHandler(WeatherUnavailableException.class)
     ProblemDetail weatherUnavailable(WeatherUnavailableException e) {
-        log.error("{}: {}", e.getMessage(), e.getCause() == null ? "" : e.getCause().getMessage());
+        log.warn("{}: {}", e.getMessage(), e.getCause() == null ? "" : e.getCause().getMessage());
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
                 "Every weather provider is unavailable and no earlier result is cached yet.");
         problem.setTitle("Weather unavailable");

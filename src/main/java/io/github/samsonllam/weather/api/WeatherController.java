@@ -3,6 +3,9 @@ package io.github.samsonllam.weather.api;
 import io.github.samsonllam.weather.domain.City;
 import io.github.samsonllam.weather.domain.WeatherReport;
 import io.github.samsonllam.weather.domain.WeatherService;
+import java.time.Clock;
+import java.time.Duration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,22 +15,25 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(path = "/v1/weather", produces = MediaType.APPLICATION_JSON_VALUE)
-class WeatherController {
+public class WeatherController {
 
     /** Present (with value {@code true}) when the payload is older than the cache TTL because every provider was down. */
-    static final String STALE_HEADER = "X-Weather-Stale";
+    public static final String STALE_HEADER = "X-Weather-Stale";
 
     private final WeatherService weatherService;
+    private final Clock clock;
 
-    WeatherController(WeatherService weatherService) {
+    WeatherController(WeatherService weatherService, Clock clock) {
         this.weatherService = weatherService;
+        this.clock = clock;
     }
 
     @GetMapping
     ResponseEntity<WeatherResponse> currentWeather(@RequestParam String city) {
         City resolved = City.fromQuery(city).orElseThrow(() -> new UnsupportedCityException(city));
         WeatherReport report = weatherService.currentWeather(resolved);
-        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        long ageSeconds = Math.max(0, Duration.between(report.fetchedAt(), clock.instant()).toSeconds());
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok().header(HttpHeaders.AGE, Long.toString(ageSeconds));
         if (report.stale()) {
             response.header(STALE_HEADER, "true");
         }

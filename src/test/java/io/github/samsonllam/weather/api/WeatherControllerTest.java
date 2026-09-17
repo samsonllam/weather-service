@@ -12,13 +12,16 @@ import io.github.samsonllam.weather.domain.Weather;
 import io.github.samsonllam.weather.domain.WeatherReport;
 import io.github.samsonllam.weather.domain.WeatherService;
 import io.github.samsonllam.weather.domain.WeatherUnavailableException;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.servlet.MockMvc;
@@ -26,7 +29,8 @@ import org.springframework.test.web.servlet.MockMvc;
 @WebMvcTest(WeatherController.class)
 class WeatherControllerTest {
 
-    private static final Instant FETCHED_AT = Instant.parse("2026-09-17T04:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-09-17T04:00:04Z");
+    private static final Instant FOUR_SECONDS_AGO = NOW.minusSeconds(4);
 
     @Autowired
     private MockMvc mockMvc;
@@ -36,18 +40,19 @@ class WeatherControllerTest {
 
     @Test
     void returnsTheUnifiedPayloadForSingapore() throws Exception {
-        weatherService.respondWith(new WeatherReport(new Weather(29, 20), FETCHED_AT, false));
+        weatherService.respondWith(new WeatherReport(new Weather(29, 20), NOW, false));
 
         mockMvc.perform(get("/v1/weather").param("city", "singapore"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(content().json("{\"wind_speed\": 20, \"temperature_degrees\": 29}", JsonCompareMode.STRICT))
+                .andExpect(header().string(HttpHeaders.AGE, "0"))
                 .andExpect(header().doesNotExist(WeatherController.STALE_HEADER));
     }
 
     @Test
     void roundsToWholeNumbers() throws Exception {
-        weatherService.respondWith(new WeatherReport(new Weather(30.4, 18.0000001), FETCHED_AT, false));
+        weatherService.respondWith(new WeatherReport(new Weather(30.4, 18.0000001), NOW, false));
 
         mockMvc.perform(get("/v1/weather").param("city", "singapore"))
                 .andExpect(status().isOk())
@@ -55,12 +60,13 @@ class WeatherControllerTest {
     }
 
     @Test
-    void flagsStaleResultsWithAHeaderAndKeepsThePayloadUnchanged() throws Exception {
-        weatherService.respondWith(new WeatherReport(new Weather(29, 20), FETCHED_AT, true));
+    void flagsStaleResultsWithAHeaderAndTheirAgeAndKeepsThePayloadUnchanged() throws Exception {
+        weatherService.respondWith(new WeatherReport(new Weather(29, 20), FOUR_SECONDS_AGO, true));
 
         mockMvc.perform(get("/v1/weather").param("city", "singapore"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(WeatherController.STALE_HEADER, "true"))
+                .andExpect(header().string(HttpHeaders.AGE, "4"))
                 .andExpect(content().json("{\"wind_speed\": 20, \"temperature_degrees\": 29}", JsonCompareMode.STRICT));
     }
 
@@ -71,6 +77,13 @@ class WeatherControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.title").value("Unsupported city"))
                 .andExpect(jsonPath("$.detail").value("Unsupported city 'tokyo'. Supported cities: singapore"));
+    }
+
+    @Test
+    void truncatesAnOverlongCityNameInTheErrorDetail() throws Exception {
+        mockMvc.perform(get("/v1/weather").param("city", "x".repeat(200)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("Unsupported city '" + "x".repeat(40) + "...'. Supported cities: singapore"));
     }
 
     @Test
@@ -96,6 +109,11 @@ class WeatherControllerTest {
         @Bean
         StubWeatherService weatherService() {
             return new StubWeatherService();
+        }
+
+        @Bean
+        Clock clock() {
+            return Clock.fixed(NOW, ZoneOffset.UTC);
         }
     }
 

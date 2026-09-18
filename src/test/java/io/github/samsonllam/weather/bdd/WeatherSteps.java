@@ -187,10 +187,12 @@ public class WeatherSteps {
         assertThat(JsonPath.<String>read(health, "$.components.weatherProviders.details.cache." + city)).isEqualTo(state);
     }
 
-    @Then("the metrics do not contain the provider keys")
-    public void theMetricsDoNotContainTheProviderKeys() {
+    @Then("the metrics record calls to both providers without their keys")
+    public void theMetricsRecordCallsToBothProvidersWithoutTheirKeys() {
         String metrics = client.get().uri("/actuator/metrics/http.client.requests").retrieve().body(String.class);
         assertThat(metrics)
+                .contains("/current?access_key={accessKey}&query={query}&units=m")
+                .contains("/data/2.5/weather?q={query}&appid={apiKey}&units=metric")
                 .doesNotContain(CucumberSpringConfiguration.WEATHERSTACK_KEY)
                 .doesNotContain(CucumberSpringConfiguration.OPENWEATHERMAP_KEY);
     }

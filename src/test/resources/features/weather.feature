@@ -11,7 +11,6 @@ Feature: Singapore weather
     And the response is not marked stale
     And OpenWeatherMap was called 0 times
     And the health endpoint shows the cache for singapore as cached
-    And the metrics do not contain the provider keys
 
   Scenario: OpenWeatherMap takes over when Weatherstack is down
     Given Weatherstack is down
@@ -19,6 +18,7 @@ Feature: Singapore weather
     When a client asks for the weather in singapore
     Then the client receives temperature 30 and wind speed 18
     And the response is not marked stale
+    And the metrics record calls to both providers without their keys
 
   Scenario: OpenWeatherMap takes over when Weatherstack rejects the access key
     Given Weatherstack rejects the access key

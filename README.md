@@ -42,8 +42,9 @@ docker run --rm -p 8080:8080 --env-file .env weather-service
 The service refuses to start if either key is missing; the error names the environment variable.
 Keys are read from `WEATHERSTACK_ACCESS_KEY` and `OPENWEATHERMAP_API_KEY` (see
 `src/main/resources/application.yml`). They are sent only in the provider requests: log messages,
-exception chains and metrics are built from status codes, error codes and class names, never from
-upstream text, so a provider that echoed the key back could not put it into the logs.
+exception chains and metrics are built from status codes, error codes and exception class names,
+never from anything the provider sent back, body or headers, so a provider that echoed the key
+could not put it into the logs.
 
 ## API
 
@@ -52,12 +53,13 @@ upstream text, so a provider that echoed the key back could not put it into the 
 | Response | When | Body |
 |---|---|---|
 | `200` | A result younger than 3 s is cached, or a provider answered | `{"wind_speed": 20, "temperature_degrees": 29}` |
-| `200` + header `X-Weather-Stale: true` | Every provider failed, but an older result exists | Same shape, older data |
+| `200` + header `X-Weather-Stale: true` | The refresh failed, or is still in progress after 3 s, and an older result exists | Same shape, older data |
 | `400` | `city` is missing or is not `singapore` | RFC 9457 problem detail |
-| `503` | Every provider failed and nothing has ever been cached | RFC 9457 problem detail |
+| `503` | The refresh failed, or is still in progress after 3 s, and nothing has ever been cached | RFC 9457 problem detail |
 
 `temperature_degrees` is in degrees Celsius and `wind_speed` in kilometres per hour, both rounded
-to the nearest whole number (halves round up). Every `200` also carries `X-Weather-Age`, the whole
+to the nearest whole number (halves round towards positive infinity: 29.5 becomes 30). Every `200`
+also carries `X-Weather-Age`, the whole
 seconds since the observation was received from a provider, and `Cache-Control: no-store`, because
 this service applies its own freshness rules and downstream caches must not add theirs.
 
@@ -106,16 +108,21 @@ replica starts empty.
 **Single-flight refresh.** When an entry expires under load, only one request performs the provider
 call; concurrent requests for the same city wait on a per-city lock and then take the answer that
 call produced, whether it was a fresh value, a stale one or a `503`. A request that has waited one
-TTL for someone else's refresh stops waiting and takes the last known value instead, so a slow
-provider never queues customers behind it. These cases are tested with 16 concurrent virtual
-threads, including a refresh that takes longer than the TTL (`CachingWeatherServiceTest`).
+TTL for someone else's refresh, or is interrupted while waiting, stops waiting and takes the last
+known value instead (flagged stale), or gets a `503` if there is none. So a slow provider never
+queues customers behind it, at the price of a stale answer while a refresh is still in progress,
+even one that is about to succeed. These cases are tested with 16 concurrent virtual threads whose
+contention on the lock is established before the provider is released, including refreshes that
+take longer than the TTL and waiters that give up (`CachingWeatherServiceTest`).
 
 **Failover.** `FailoverWeatherProvider` tries the providers in order and returns the first
 observation. Any `RuntimeException` from a provider counts as a failure, not only the expected
 `ProviderException`, so a bug in one adapter cannot take the endpoint down. When all providers fail
-it throws one exception with every individual failure attached. A provider skipped by its circuit
-breaker is logged at debug level only; an outage therefore costs one warning per probe, that is one
-per 3 s per city.
+it throws one exception with every individual failure attached. Once the request has been
+interrupted, no further provider is tried. A provider skipped by its circuit breaker is logged at
+debug level only, and the `503`s answered from memory are not logged at all; an outage therefore
+costs a few warning lines per probe (one per provider that was actually called, plus one from the
+cache), that is per 3 s per city.
 
 **Circuit breakers.** Each provider is wrapped in its own Resilience4j circuit breaker. The breaker
 looks at the last 6 calls and, once it has seen at least 3, opens when half or more of them failed.
@@ -128,13 +135,14 @@ which needs both the 30 s to have passed and the cache's own 3 s suppression to 
 breakers read time through the application `Clock`, so the whole open-retry-close cycle is covered
 by tests without waiting.
 
-**Latency bounds.** Each provider has a 2 s timeout, applied by Spring as the JDK request timeout,
-which bounds connecting and receiving the response headers together, and applied again to reading
-the body. A provider that hangs costs about 2 s; one that sends headers and then stalls the body
-costs up to 4 s. The first request after the cache expires therefore waits about 4 s in the worst
-common case (both providers hanging) before it gets a stale result or a `503`, and it pays that
-price once: after three such failures per provider the breakers open and the answer is immediate.
-Requests waiting behind that refresh give up after 3 s and take the last known value.
+**Latency bounds.** Each provider has a 2 s timeout. Spring applies it as a single timer that starts
+when the request is sent and runs until the response body has been read, cancelling the exchange
+when it fires, so a provider that hangs anywhere, before or after sending its headers, costs about
+2 s (the JDK connect timeout, also 2 s, is a second cap on the connection phase). The first request
+after the cache expires therefore waits about 4 s in the worst case of both providers hanging before
+it gets a stale result or a `503`, and it pays that price once: after three such failures per
+provider the breakers open and the answer is immediate. Requests waiting behind that refresh give up
+after 3 s and take the last known value.
 
 **Providers.** Each adapter turns one upstream API into the domain `Weather` record (degrees Celsius,
 km/h). Weatherstack is called with `units=m`, which already gives those units; it reports errors with
@@ -143,25 +151,29 @@ rather than repeating the upstream text. OpenWeatherMap is called with `units=me
 Celsius but metres per second, so wind speed is multiplied by 3.6. Numeric fields are mapped to
 boxed types so that a missing field is an error rather than a silent zero, and `Weather` rejects
 physically implausible readings, so a provider glitch cannot become the value served for the whole
-of an outage. HTTP errors and undecodable bodies become a `ProviderException` that carries the
-status or the exception class name only; the Spring exception, whose message quotes the body, is
-deliberately not kept as the cause. The tests put the key into error bodies and check the full
-stack trace for it.
+of an outage. HTTP errors, undecodable bodies, malformed headers and transport failures become a
+`ProviderException` that carries the status or the root exception's class name only; the
+underlying exception, whose message may quote the body or a header, is never kept as the cause.
+The tests put the key into error bodies and into a `Content-Type` header and check the full stack
+trace for it.
 
 **Configuration.** Everything tunable is under `weather.*` in `application.yml`, bound to the
 `WeatherProperties` record. Keys come from environment variables and are validated at startup.
 
 ## Tests
 
-`./mvnw verify` runs 87 tests:
+`./mvnw verify` runs 91 tests:
 
-- **Unit tests** for the failover chain, the cache with its stale fallback, once-per-TTL probing and
-  single-flight refresh in every outcome (driven by a fake clock), the circuit-breaker wrapper
+- **Unit tests** for the failover chain (including no further provider after an interruption), the
+  cache with its stale fallback, once-per-TTL probing and single-flight refresh in every outcome
+  (driven by a fake clock, with lock contention established before the provider is released, and
+  real-time tests for waiters that give up or are interrupted), the circuit-breaker wrapper
   including recovery, value validation and city parsing.
 - **Provider tests** run each adapter against a real local HTTP server (`FakeProviderServer`, built on
   the JDK's `HttpServer`), covering payload parsing, Weatherstack's HTTP-200 error payloads, HTTP
-  errors, non-JSON and empty bodies, implausible readings, a provider that hangs before or after
-  sending its headers, an unreachable provider, and error bodies that echo the key.
+  errors, non-JSON and empty bodies, a malformed `Content-Type`, implausible readings, a provider
+  that hangs before or after sending its headers, an unreachable provider, and error bodies and
+  headers that echo the key.
 - **Web slice test** for the controller contract with MockMvc: exact JSON, rounding, the age and
   stale headers, `400` and `503` problem details.
 - **Configuration tests** that the context wires up and that startup fails with a clear message when
@@ -172,7 +184,8 @@ stack trace for it.
   rejected key and on a hanging primary, 3 s caching, stale fallback with providers down or hanging,
   a fallback value surviving a later total outage, one probe per TTL during an outage, a breaker
   opening and recovering (checked through `/actuator/health`), a stale value being replaced on
-  recovery, `503` on a cold start, unknown city, and key-free metrics.
+  recovery, `503` on a cold start, unknown city, and metrics that record both providers without
+  their keys.
 
 There are no mocks; the tests use small hand-written stubs and real HTTP, so they read as
 documentation of the behaviour.
@@ -204,9 +217,10 @@ documentation of the behaviour.
 - **Freshness is judged on the wall clock.** A backward clock step extends freshness by the size of
   the step; a monotonic time source would avoid that. Clock anomalies cannot prevent the stale
   fallback, because nothing in the cache path depends on timestamps being ordered.
-- **Circuit-breaker thresholds are tuned for one probe per 3 s**: a window of 6 calls spans about
-  18 s, so three failures in a row bench a provider for 30 s and traffic moves to the other one. The
-  cache gates the provider call rate, so endpoint traffic does not change these numbers.
+- **Circuit-breaker thresholds are tuned for one probe per 3 s**: at that rate a window of 6 calls
+  spans about 18 s (longer when traffic is sparse, since the cache only probes on demand), so three
+  failures in a row bench a provider for 30 s and traffic moves to the other one. The cache gates
+  the provider call rate, so endpoint traffic does not change these numbers.
 - **The served value may flip between providers** when Weatherstack fails once and recovers, because
   the two services do not report identical readings. The brief allows it.
 - **Health stays `UP` with open breakers**, and even on a cold start with nothing cached: liveness is
@@ -215,6 +229,10 @@ documentation of the behaviour.
   state is the breaker's view of its recent calls, not a live probe of the upstream.
 - **No retries within a provider.** Failing over is the retry; retrying the same provider first would
   add latency for the client.
+- **Waiting for a refresh is capped at one TTL.** A request that has waited 3 s for another request's
+  refresh takes the last known value, flagged stale, even if that refresh is about to succeed; with
+  nothing cached it gets a `503`. The alternative, waiting for the refresh however long it takes,
+  would let one slow provider hold every request for that city.
 - **Weatherstack's free plan allows 100 calls a month.** Under steady traffic a 3 s TTL exhausts that
   within minutes, after which Weatherstack answers HTTP 200 with an error payload; the service treats
   that as a failure and lives on OpenWeatherMap, which is visible in the logs and in the breaker

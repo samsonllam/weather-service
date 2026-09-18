@@ -97,11 +97,12 @@ class WeatherConfiguration {
     }
 
     /**
-     * One client per provider so that each gets its own base URL and timeouts. The read timeout is
-     * applied by Spring as the JDK request timeout, which bounds connecting and receiving the
-     * headers together, and again to reading the body. HTTP/1.1 is pinned so that behaviour is the
-     * same whether a base URL is http or https (the JDK client would otherwise try an h2c upgrade
-     * on plain http); two small requests every few seconds gain nothing from HTTP/2.
+     * One client per provider so that each gets its own base URL and timeouts. Spring applies the
+     * read timeout as one timer started when the request is sent and running until the body has
+     * been read, so it caps the whole exchange; the JDK connect timeout is a second cap on the
+     * connection phase only. HTTP/1.1 is pinned so that behaviour is the same whether a base URL
+     * is http or https (the JDK client would otherwise try an h2c upgrade on plain http); two small
+     * requests every few seconds have little to gain from HTTP/2.
      */
     private static RestClient restClient(RestClient.Builder builder, ProviderSettings settings) {
         HttpClient httpClient = HttpClient.newBuilder()

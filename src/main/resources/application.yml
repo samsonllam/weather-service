@@ -14,8 +14,8 @@ weather:
   cache-ttl: 3s
   providers:
     # Failover order is fixed in WeatherConfiguration: weatherstack first, openweathermap second.
-    # The timeout bounds connecting and receiving the response headers together, and separately
-    # bounds reading the body; a provider that hangs costs about this long before the next is tried.
+    # The timeout is one window per request covering connecting, the headers and the body, so a
+    # provider that hangs anywhere costs about this long before the next one is tried.
     weatherstack:
       base-url: https://api.weatherstack.com
       api-key: ${WEATHERSTACK_ACCESS_KEY:}

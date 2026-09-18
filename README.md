@@ -190,6 +190,22 @@ trace for it.
 There are no mocks; the tests use small hand-written stubs and real HTTP, so they read as
 documentation of the behaviour.
 
+## Load test
+
+Measured on a laptop with ApacheBench (`ab -k -n 30000 -c 200`) against the packaged jar, with both
+providers pointed at a local stub that can be switched between 200 and 503:
+
+| Phase | Throughput | Latency | Provider calls |
+|---|---|---|---|
+| Providers healthy | ~15,600 req/s, 0 failed | p50 9 ms, p99 62 ms, max 127 ms | 1 for 30,000 requests |
+| Both providers returning 503 | ~21,400 req/s, 0 failed, all `200` with `X-Weather-Stale: true` | p99 40 ms | 2 (one probe) |
+| Providers back | ~22,000 req/s, 0 failed; the next probe served a fresh value | p99 40 ms | 2 |
+
+Live threads stayed between 23 and 32 throughout (virtual threads), and the log gained three lines
+for the whole outage phase. This shows that endpoint throughput is decoupled from provider calls,
+not that the service has been sized for production: it is one short run on one machine with no
+real network between the service and the providers.
+
 ## Trade-offs and what was left out
 
 - **In-memory cache and per-instance coordination.** One instance is enough for this brief. Several

@@ -14,14 +14,15 @@ public final class ProviderSupport {
     }
 
     /**
-     * Runs an HTTP call and maps every {@link RestClientException} to a {@link ProviderException}
-     * whose message is built here from a status code or an exception class name, never from
-     * upstream text.
+     * Runs an HTTP call and maps any failure to a {@link ProviderException} whose message is built
+     * here from a status code or an exception class name, never from upstream content.
      *
-     * <p>Exceptions carrying response content (HTTP error statuses, decoding failures) are not kept
-     * as the cause: Spring quotes the response body in their messages, and a provider that echoes
-     * the request could put the API key into a stack trace. Transport failures carry no body and
-     * are kept, because their root cause is the useful diagnostic.
+     * <p>No exception from the HTTP layer is kept as the cause. Spring quotes the response body in
+     * its status and decoding exceptions, a malformed header such as {@code Content-Type} surfaces
+     * as an {@link IllegalArgumentException} carrying the header value, and the JDK client's
+     * protocol errors can quote invalid header lines; a provider that echoed the request could put
+     * the API key into any of those. The class name of the root cause is enough to tell a timeout
+     * from a refused connection from a garbled response.
      */
     public static <T> T call(String providerName, Supplier<T> request) {
         T body;
@@ -30,9 +31,11 @@ public final class ProviderSupport {
         } catch (RestClientResponseException e) {
             throw new ProviderException(providerName, "HTTP " + e.getStatusCode().value());
         } catch (ResourceAccessException e) {
-            throw new ProviderException(providerName, "I/O failure: " + rootCause(e).getClass().getSimpleName(), e);
+            throw new ProviderException(providerName, "I/O failure: " + rootCause(e).getClass().getSimpleName());
         } catch (RestClientException e) {
             throw new ProviderException(providerName, "unreadable response: " + rootCause(e).getClass().getSimpleName());
+        } catch (RuntimeException e) {
+            throw new ProviderException(providerName, "malformed response: " + rootCause(e).getClass().getSimpleName());
         }
         if (body == null) {
             throw new ProviderException(providerName, "empty response body");

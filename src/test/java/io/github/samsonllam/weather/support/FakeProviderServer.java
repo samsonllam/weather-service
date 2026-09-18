@@ -23,6 +23,7 @@ public final class FakeProviderServer implements AutoCloseable {
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private volatile int status = 200;
     private volatile String body = "{}";
+    private volatile String contentType = "application/json";
     private volatile Duration headerDelay = Duration.ZERO;
     private volatile Duration bodyDelay = Duration.ZERO;
     private volatile URI lastRequestUri;
@@ -49,6 +50,12 @@ public final class FakeProviderServer implements AutoCloseable {
         return this;
     }
 
+    /** Overrides the Content-Type header, to simulate a provider that sends a malformed or unexpected one. */
+    public FakeProviderServer withContentType(String contentType) {
+        this.contentType = contentType;
+        return this;
+    }
+
     /** Delays the whole response, to simulate a provider that accepts connections but does not answer. */
     public FakeProviderServer respondAfter(Duration delay) {
         this.headerDelay = delay;
@@ -63,6 +70,7 @@ public final class FakeProviderServer implements AutoCloseable {
 
     public void reset() {
         respond(200, "{}");
+        contentType = "application/json";
         headerDelay = Duration.ZERO;
         bodyDelay = Duration.ZERO;
         lastRequestUri = null;
@@ -83,7 +91,7 @@ public final class FakeProviderServer implements AutoCloseable {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         try {
             Thread.sleep(headerDelay);
-            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.getResponseHeaders().add("Content-Type", contentType);
             exchange.sendResponseHeaders(status, bytes.length);
             Thread.sleep(bodyDelay);
             try (OutputStream out = exchange.getResponseBody()) {

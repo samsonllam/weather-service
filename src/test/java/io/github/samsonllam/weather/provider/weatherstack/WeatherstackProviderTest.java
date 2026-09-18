@@ -99,6 +99,16 @@ class WeatherstackProviderTest {
     }
 
     @Test
+    void treatsAMalformedContentTypeAsAFailureWithoutQuotingIt() {
+        server.respond(200, ProviderPayloads.weatherstack(29, 20)).withContentType("key=secret-key");
+
+        assertThatThrownBy(() -> provider.currentWeather(City.SINGAPORE))
+                .isInstanceOf(ProviderException.class)
+                .hasMessageStartingWith("weatherstack: malformed response: ")
+                .satisfies(e -> assertThat(StackTraces.of(e)).doesNotContain(ACCESS_KEY));
+    }
+
+    @Test
     void treatsAServerErrorAsAFailureWithoutQuotingABodyThatEchoesTheKey() {
         server.respond(503, "{\"echo\": \"access_key=secret-key\"}");
 
@@ -116,6 +126,7 @@ class WeatherstackProviderTest {
                 .isInstanceOf(ProviderException.class)
                 .hasMessageStartingWith("weatherstack: I/O failure: ")
                 .hasMessageContaining("TimeoutException")
+                .hasNoCause()
                 .satisfies(e -> assertThat(StackTraces.of(e)).doesNotContain(ACCESS_KEY));
     }
 

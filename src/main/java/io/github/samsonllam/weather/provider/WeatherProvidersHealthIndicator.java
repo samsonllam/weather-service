@@ -16,7 +16,8 @@ import org.springframework.stereotype.Component;
  * under {@code /actuator/health}.
  *
  * <p>The service stays {@code UP} even when every circuit is open, because it keeps answering from
- * the cache; the details are there for dashboards and alerts, not for load balancers. A circuit
+ * the cache when it has one (and answers a fast 503 when it has not); the details are there for
+ * dashboards and alerts, not for load balancers, and a readiness rule could be built on them. A circuit
  * state is the breaker's view of recent calls, not a live probe: a fallback provider's breaker can
  * stay open after the upstream recovered simply because the primary is healthy and it is never called.
  */

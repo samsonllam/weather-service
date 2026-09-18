@@ -63,6 +63,25 @@ class FailoverWeatherProviderTest {
     }
 
     @Test
+    void doesNotTryTheNextProviderOnceTheRequestHasBeenInterrupted() throws Exception {
+        primary.willFail("HTTP 503");
+        secondary.willReturn(SECONDARY_WEATHER);
+        Thread request = new Thread(() -> {
+            Thread.currentThread().interrupt();
+            assertThatThrownBy(() -> failover.currentWeather(City.SINGAPORE))
+                    .isInstanceOf(AllProvidersFailedException.class)
+                    .satisfies(e -> assertThat(e.getSuppressed())
+                            .extracting(Throwable::getMessage)
+                            .containsExactly("primary: HTTP 503", "secondary: not tried, the request was interrupted"));
+        });
+        request.start();
+        request.join(5_000);
+
+        assertThat(request.isAlive()).isFalse();
+        assertThat(secondary.callCount()).isZero();
+    }
+
+    @Test
     void requiresAtLeastOneProvider() {
         assertThatThrownBy(() -> new FailoverWeatherProvider(List.of()))
                 .isInstanceOf(IllegalArgumentException.class);

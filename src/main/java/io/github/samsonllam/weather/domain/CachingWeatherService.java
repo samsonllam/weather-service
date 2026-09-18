@@ -23,8 +23,10 @@ import org.slf4j.LoggerFactory;
  * to show for it.
  *
  * <p>Refreshes are single-flight per city: when an entry expires under load, one request performs
- * the provider call while the others wait for its outcome. A waiter gives up after one TTL and
- * takes the last known value instead, so a slow refresh never queues customers behind it.
+ * the provider call while the others wait for its outcome. A waiter gives up after one TTL (or when
+ * interrupted) and takes the last known value instead, flagged stale, or fails if there is none;
+ * so a slow refresh never queues customers behind it, at the price of a stale answer while a
+ * refresh is still in progress.
  *
  * <p>The cache holds observations only; the lock and the attempt record live in this instance. Running
  * several instances multiplies the probes by the number of instances, which is acceptable for
@@ -107,13 +109,13 @@ public final class CachingWeatherService implements WeatherService {
         }
     }
 
-    /** For a request that waited one TTL for another request's refresh: the last known value, or nothing. */
+    /** For a request that stopped waiting for another request's refresh: the last known value, or nothing. */
     private WeatherReport lastKnown(City city) {
         Instant now = clock.instant();
         return cache.get(city)
                 .map(entry -> report(entry, now))
                 .orElseThrow(() -> new WeatherUnavailableException(city,
-                        new IllegalStateException("a refresh has been running for longer than " + ttl)));
+                        new IllegalStateException("gave up waiting for a refresh that is still in progress")));
     }
 
     private WeatherReport refresh(City city) {
@@ -129,14 +131,18 @@ public final class CachingWeatherService implements WeatherService {
         return new WeatherReport(weather, now, false);
     }
 
+    /** Logs once per failed probe; the requests answered from memory until the next probe log nothing. */
     private WeatherReport afterFailedRefresh(City city, RuntimeException failure) {
         Instant now = clock.instant();
         attempts.put(city, new Attempt(now, failure));
-        CachedWeather previous = cache.get(city)
-                .orElseThrow(() -> new WeatherUnavailableException(city, failure));
+        Optional<CachedWeather> previous = cache.get(city);
+        if (previous.isEmpty()) {
+            log.warn("No weather available for {}, next provider attempt after {}: {}", city, ttl, failure.getMessage());
+            throw new WeatherUnavailableException(city, failure);
+        }
         log.warn("Serving stale weather for {} fetched at {}, next provider attempt after {}: {}",
-                city, previous.fetchedAt(), ttl, failure.getMessage());
-        return report(previous, now);
+                city, previous.get().fetchedAt(), ttl, failure.getMessage());
+        return report(previous.get(), now);
     }
 
     private WeatherReport report(CachedWeather entry, Instant now) {

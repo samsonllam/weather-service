@@ -38,6 +38,11 @@ public final class FailoverWeatherProvider implements WeatherProvider {
     public Weather currentWeather(City city) {
         List<ProviderException> failures = new ArrayList<>();
         for (WeatherProvider provider : providers) {
+            if (Thread.currentThread().isInterrupted()) {
+                // The caller has given up (client gone, shutdown): do not start another provider call on its behalf.
+                failures.add(new ProviderException(provider.name(), "not tried, the request was interrupted"));
+                continue;
+            }
             try {
                 return provider.currentWeather(city);
             } catch (ProviderSkippedException e) {

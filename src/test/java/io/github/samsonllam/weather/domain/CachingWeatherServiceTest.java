@@ -9,6 +9,7 @@ import io.github.samsonllam.weather.support.StubWeatherProvider;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,6 +29,13 @@ class CachingWeatherServiceTest {
     private final StubWeatherProvider provider = new StubWeatherProvider("stub");
     private final CachingWeatherService service =
             new CachingWeatherService(provider, new InMemoryWeatherCache(), TTL, clock);
+    /**
+     * For the contention tests: expiry is driven by the fake clock, while the real-time wait for the
+     * lock is bounded by the TTL, so a long TTL keeps a slow CI scheduler from timing the waiters out.
+     */
+    private static final Duration LONG_TTL = Duration.ofMinutes(1);
+    private final CachingWeatherService patient =
+            new CachingWeatherService(provider, new InMemoryWeatherCache(), LONG_TTL, clock);
     private final ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
 
     @AfterEach
@@ -176,14 +184,14 @@ class CachingWeatherServiceTest {
     @Test
     void concurrentRequestsAfterExpiryShareASingleProviderCall() throws Exception {
         provider.willReturn(FIRST);
-        service.currentWeather(City.SINGAPORE);
-        clock.advance(TTL.plusSeconds(1));
+        patient.currentWeather(City.SINGAPORE);
+        clock.advance(LONG_TTL.plusSeconds(1));
         provider.willReturn(SECOND);
 
-        List<Future<WeatherReport>> requests = submitWhileProviderIsHeld(16);
+        Contention contention = contend(patient, 16);
         provider.releaseCalls();
 
-        for (Future<WeatherReport> request : requests) {
+        for (Future<WeatherReport> request : contention.requests()) {
             WeatherReport report = request.get(5, TimeUnit.SECONDS);
             assertThat(report.weather()).isEqualTo(SECOND);
             assertThat(report.stale()).isFalse();
@@ -194,15 +202,15 @@ class CachingWeatherServiceTest {
     @Test
     void aRefreshSlowerThanTheTtlIsStillSharedWithTheRequestsThatWaitedForIt() throws Exception {
         provider.willReturn(FIRST);
-        service.currentWeather(City.SINGAPORE);
-        clock.advance(TTL.plusSeconds(1));
+        patient.currentWeather(City.SINGAPORE);
+        clock.advance(LONG_TTL.plusSeconds(1));
         provider.willReturn(SECOND);
 
-        List<Future<WeatherReport>> requests = submitWhileProviderIsHeld(16);
-        clock.advance(TTL.plusSeconds(1));
+        Contention contention = contend(patient, 16);
+        clock.advance(LONG_TTL.plusSeconds(1));
         provider.releaseCalls();
 
-        for (Future<WeatherReport> request : requests) {
+        for (Future<WeatherReport> request : contention.requests()) {
             WeatherReport report = request.get(5, TimeUnit.SECONDS);
             assertThat(report.weather()).isEqualTo(SECOND);
             assertThat(report.stale()).isFalse();
@@ -211,16 +219,17 @@ class CachingWeatherServiceTest {
     }
 
     @Test
-    void concurrentRequestsDuringAnOutageShareASingleFailedAttempt() throws Exception {
+    void aFailedRefreshSlowerThanTheTtlIsStillSharedWithTheRequestsThatWaitedForIt() throws Exception {
         provider.willReturn(FIRST);
-        service.currentWeather(City.SINGAPORE);
-        clock.advance(TTL.plusSeconds(1));
+        patient.currentWeather(City.SINGAPORE);
+        clock.advance(LONG_TTL.plusSeconds(1));
         provider.willFail("all providers down");
 
-        List<Future<WeatherReport>> requests = submitWhileProviderIsHeld(16);
+        Contention contention = contend(patient, 16);
+        clock.advance(LONG_TTL.plusSeconds(1));
         provider.releaseCalls();
 
-        for (Future<WeatherReport> request : requests) {
+        for (Future<WeatherReport> request : contention.requests()) {
             WeatherReport report = request.get(5, TimeUnit.SECONDS);
             assertThat(report.weather()).isEqualTo(FIRST);
             assertThat(report.stale()).isTrue();
@@ -232,10 +241,10 @@ class CachingWeatherServiceTest {
     void concurrentRequestsWithNothingCachedShareASingleFailedAttempt() throws Exception {
         provider.willFail("all providers down");
 
-        List<Future<WeatherReport>> requests = submitWhileProviderIsHeld(16);
+        Contention contention = contend(patient, 16);
         provider.releaseCalls();
 
-        for (Future<WeatherReport> request : requests) {
+        for (Future<WeatherReport> request : contention.requests()) {
             assertThatThrownBy(() -> request.get(5, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .hasCauseInstanceOf(WeatherUnavailableException.class);
@@ -251,16 +260,52 @@ class CachingWeatherServiceTest {
         impatient.currentWeather(City.SINGAPORE);
         clock.advance(shortTtl.plusMillis(1));
         provider.willReturn(SECOND);
-        provider.holdCalls();
-        Future<WeatherReport> leader = pool.submit(() -> impatient.currentWeather(City.SINGAPORE));
-        await().atMost(5, TimeUnit.SECONDS).until(() -> provider.inFlight() == 1);
+        Contention contention = contend(impatient, 1);
 
         WeatherReport waiter = pool.submit(() -> impatient.currentWeather(City.SINGAPORE)).get(5, TimeUnit.SECONDS);
 
         assertThat(waiter.weather()).as("served without waiting for the slow refresh").isEqualTo(FIRST);
         assertThat(waiter.stale()).isTrue();
         provider.releaseCalls();
-        assertThat(leader.get(5, TimeUnit.SECONDS).weather()).isEqualTo(SECOND);
+        assertThat(contention.requests().getFirst().get(5, TimeUnit.SECONDS).weather()).isEqualTo(SECOND);
+    }
+
+    @Test
+    void aRequestThatWaitedOneTtlWithNothingCachedFails() throws Exception {
+        Duration shortTtl = Duration.ofMillis(200);
+        CachingWeatherService impatient = new CachingWeatherService(provider, new InMemoryWeatherCache(), shortTtl, clock);
+        provider.willReturn(FIRST);
+        Contention contention = contend(impatient, 1);
+
+        Future<WeatherReport> waiter = pool.submit(() -> impatient.currentWeather(City.SINGAPORE));
+
+        assertThatThrownBy(() -> waiter.get(5, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .cause()
+                .isInstanceOf(WeatherUnavailableException.class)
+                .cause()
+                .hasMessage("gave up waiting for a refresh that is still in progress");
+        provider.releaseCalls();
+        assertThat(contention.requests().getFirst().get(5, TimeUnit.SECONDS).weather()).isEqualTo(FIRST);
+    }
+
+    @Test
+    void anInterruptedWaiterTakesTheLastKnownValueImmediately() throws Exception {
+        provider.willReturn(FIRST);
+        patient.currentWeather(City.SINGAPORE);
+        clock.advance(LONG_TTL.plusSeconds(1));
+        provider.willReturn(SECOND);
+        Contention contention = contend(patient, 2);
+        int waiter = contention.waiters().getFirst();
+        int leader = contention.leader();
+
+        contention.thread(waiter).interrupt();
+
+        WeatherReport report = contention.requests().get(waiter).get(5, TimeUnit.SECONDS);
+        assertThat(report.weather()).isEqualTo(FIRST);
+        assertThat(report.stale()).isTrue();
+        provider.releaseCalls();
+        assertThat(contention.requests().get(leader).get(5, TimeUnit.SECONDS).weather()).isEqualTo(SECOND);
     }
 
     @Test
@@ -269,13 +314,50 @@ class CachingWeatherServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /** Holds the provider, fires {@code count} requests, and returns once exactly one of them is inside the provider. */
-    private List<Future<WeatherReport>> submitWhileProviderIsHeld(int count) {
+    /**
+     * The requests fired by {@link #contend}, with the thread running each one at the same index.
+     * While the provider is held, the leader is parked on the provider's latch (untimed wait) and
+     * every waiter is parked in its timed wait for the city lock.
+     */
+    private record Contention(List<Future<WeatherReport>> requests, AtomicReferenceArray<Thread> threads) {
+
+        Thread thread(int index) {
+            return threads.get(index);
+        }
+
+        int leader() {
+            return indexesInState(Thread.State.WAITING).getFirst();
+        }
+
+        List<Integer> waiters() {
+            return indexesInState(Thread.State.TIMED_WAITING);
+        }
+
+        private List<Integer> indexesInState(Thread.State state) {
+            return IntStream.range(0, threads.length())
+                    .filter(i -> threads.get(i) != null && threads.get(i).getState() == state)
+                    .boxed()
+                    .toList();
+        }
+    }
+
+    /**
+     * Holds the provider and fires {@code count} requests, returning once exactly one is inside the
+     * provider and every other one is parked in its timed wait for the city lock; so the lock is
+     * proven to be contended before the provider is released.
+     */
+    private Contention contend(CachingWeatherService target, int count) {
         provider.holdCalls();
+        AtomicReferenceArray<Thread> threads = new AtomicReferenceArray<>(count);
         List<Future<WeatherReport>> requests = IntStream.range(0, count)
-                .mapToObj(i -> pool.submit(() -> service.currentWeather(City.SINGAPORE)))
+                .mapToObj(i -> pool.submit(() -> {
+                    threads.set(i, Thread.currentThread());
+                    return target.currentWeather(City.SINGAPORE);
+                }))
                 .toList();
-        await().atMost(5, TimeUnit.SECONDS).until(() -> provider.inFlight() == 1);
-        return requests;
+        Contention contention = new Contention(requests, threads);
+        await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> provider.inFlight() == 1 && contention.waiters().size() == count - 1);
+        return contention;
     }
 }
